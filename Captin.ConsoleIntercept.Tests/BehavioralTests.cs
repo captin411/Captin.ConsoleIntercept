@@ -1,5 +1,5 @@
 using System;
-using System.IO;
+using System.Linq;
 using System.Threading.Tasks;
 using Xunit;
 
@@ -8,76 +8,101 @@ namespace Captin.ConsoleIntercept.Tests
     public class BehavioralTests
     {
         [Fact]
-        public void TopmostStringWriger_Should_CaptureConsoleOut_OnlyWhenInsideUsingBlock()
+        public void UsingBlock_OneLevel_ObservedConsoleOut_IsAsExpected()
         {
-            var givenLogText = "Show me";
-
-            Console.Write("realconsole before");
-            var topmostWriter = new StringWriter();
-            using (ConsoleOut.BeginIntercept(topmostWriter))
+            using (var observed = ConsoleOut.Observe())
             {
-                Console.Write(givenLogText);
+                Console.Write("1");
+                Assert.Equal("1", observed.ToString());
             }
-            Console.Write("realconsole after");
-            Assert.Equal(givenLogText, topmostWriter.ToString());
+        }
+
+        [Theory]
+        [InlineData("foo", new string[] { "foo" })]
+        [InlineData("foo\n", new string[] { "foo" })]
+        [InlineData("foo\r", new string[] { "foo" })]
+        [InlineData("foo\r\n", new string[] { "foo" })]
+        [InlineData("foo\nbar", new string[] { "foo", "bar" })]
+        [InlineData("foo\rbar", new string[] { "foo", "bar" })]
+        [InlineData("foo\r\nbar", new string[] { "foo", "bar" })]
+        [InlineData("foo\nbar\n", new string[] { "foo", "bar" })]
+        [InlineData("foo\rbar\r", new string[] { "foo", "bar" })]
+        [InlineData("foo\r\nbar\r\n", new string[] { "foo", "bar" })]
+        [InlineData("foo\r\nbar\r\n\r\n\r\n", new string[] { "foo", "bar", "", "" })]
+        public void Observer_ReadLines_Should_StripNewlinesAfterConsoleWrite(string given, string[] expect)
+        {
+            var observed = ConsoleOut.Observe();
+            Console.Write(given);
+            observed.Dispose();
+            Assert.Equal(expect, observed.ReadLines().ToArray());
         }
 
         [Fact]
-        public void TopmostStringWriter_Should_CaptureConsoleOut_ForNestedUsingBlocksToo()
+        public void Observer_Readlines_Should_StripNewlinesAfterConsoleWriteLine()
         {
-            var givenLog1 = "Show me 1";
-            var givenLog2 = "Show me 2";
+            var observed = ConsoleOut.Observe();
+            Console.WriteLine("foo");
+            Console.WriteLine("bar");
+            observed.Dispose();
+            Assert.Equal(new string[] { "foo", "bar" }, observed.ReadLines().ToArray());
+        }
 
-            var topmostWriter = new StringWriter();
-            var nestedWriter = new StringWriter();
-            Console.Write("realconsole before");
-            using (ConsoleOut.BeginIntercept(topmostWriter))
+        [Fact]
+        public void UsingBlock_TwoLevels_ObservedConsoleOut_IsAsExpected()
+        {
+            using (var observed1 = ConsoleOut.Observe())
             {
-                Console.Write(givenLog1);
-                using (ConsoleOut.BeginIntercept(nestedWriter))
+                Console.Write("1");
+                using (var observed2 = ConsoleOut.Observe())
                 {
-                    Console.Write(givenLog2);
+                    Console.Write("2");
                 }
+                Assert.Equal("12", observed1.ToString());
             }
-            Console.Write("realconsole after");
-            Assert.Equal($"{givenLog1}{givenLog2}", topmostWriter.ToString());
         }
 
         [Fact]
-        public void SecondToplevelStringWriter_Should_CaptureConsoleOut_OnlyWhenInsideSecondUsingBlock()
+        public void UsingBlock_Consecutive_ObserveConsoleOut_IsAsExpected()
         {
-            var givenLog1 = "Show me 1";
-            var givenLog2 = "Show me 2";
+            using (var observed = ConsoleOut.Observe())
+            {
+                Console.Write("1");
+                Assert.Equal("1", observed.ToString());
+            }
 
-            var topmostWriter1 = new StringWriter();
-            var topmostWriter2 = new StringWriter();
-            Console.Write("realconsole before");
-            using (ConsoleOut.BeginIntercept(topmostWriter1))
+            using (var observed = ConsoleOut.Observe())
             {
-                Console.Write(givenLog1);
+                Console.Write("2");
+                Assert.Equal("2", observed.ToString());
             }
-            using (ConsoleOut.BeginIntercept(topmostWriter2))
-            {
-                Console.Write(givenLog2);
-            }
-            Console.Write("realconsole after");
-            Assert.Equal(givenLog1, topmostWriter1.ToString());
-            Assert.Equal(givenLog2, topmostWriter2.ToString());
         }
 
         [Fact]
-        public void ToplevelStringWriter_Should_CaptureConsoleOut_EvenBeforeInterceptDispose()
+        public void UsingBlock_ConsecutiveWithOriginalConsoleBetween_ObserveConsoleOut_IsAsExpected()
         {
-            var givenLog1 = "Show me 1";
-            var topmostWriter1 = new StringWriter();
+            using (var observed = ConsoleOut.Observe())
+            {
+                Console.Write("1");
+                Assert.Equal("1", observed.ToString());
+            }
 
-            Console.Write("realconsole before");
+            Console.Write("2");
 
-            var context = ConsoleOut.BeginIntercept(topmostWriter1);
+            using (var observed = ConsoleOut.Observe())
+            {
+                Console.Write("3");
+                Assert.Equal("3", observed.ToString());
+            }
+        }
+
+        [Fact]
+        public void NewedUp_One_ObserveConsoleOut_IsAsExpected()
+        {
+            var context = ConsoleOut.Observe();
             try
             {
-                Console.Write(givenLog1);
-                Assert.Equal(givenLog1, topmostWriter1.ToString());
+                Console.Write("1");
+                Assert.Equal("1", context.ToString());
             }
             finally
             {
@@ -86,55 +111,65 @@ namespace Captin.ConsoleIntercept.Tests
         }
 
         [Fact]
-        public void BeginInterceptWithAdingWriterTwice_Should_ThrowException()
+        public void Dispose_OutOfOrder_ObservedConsoleOut_IsAsExpected()
         {
-            var writer = new StringWriter();
-            var ex = Assert.Throws<ArgumentException>(() => {
-                using(ConsoleOut.BeginIntercept(writer))
+            var observer1 = ConsoleOut.Observe();
+            var observer2 = ConsoleOut.Observe();
+            Console.Write("1");
+            observer1.Dispose();
+            Console.Write("2");
+            observer2.Dispose();
+            Console.Write("3");
+
+            Assert.Equal("1", observer1.ToString());
+            Assert.Equal("12", observer2.ToString());
+        }
+
+        [Fact]
+        public void OriginalConsole_AfterUsing_ShouldBeRestored()
+        {
+            var originalOut = Console.Out;
+            using (var observer = ConsoleOut.Observe())
+            {
+                Console.Write("1");
+                Assert.NotEqual(originalOut, Console.Out);
+            }
+            Assert.Equal(originalOut, Console.Out);
+        }
+
+        [Fact]
+        public void OriginalConsoleWrite_AfterUsing_ShouldNotThrowException()
+        {
+            using (var observer = ConsoleOut.Observe())
+            {
+                Console.Write("1");
+            }
+            var exception = Record.Exception(() => Console.Write("2"));
+            Assert.Null(exception);
+        }
+
+        [Fact]
+        public async Task NOT_THREADSAFE()
+        {
+            async Task<bool> LogMessageIndicatesThreadSafe(string message, int delay)
+            {
+                using (var observe = ConsoleOut.Observe())
                 {
-                    using(ConsoleOut.BeginIntercept(writer))
-                    {
-                        Console.WriteLine("foo");
-                    }
+                    if (delay > 0) { await Task.Delay(delay); }
+                    Console.Write(message);
+                    return message.Equals(observe.ToString());
                 }
-            });
-        }
-
-        [Fact]
-        public void DisposeContextOutOfOrder_Should_ThrowException()
-        {
-            var writer = new StringWriter();
-            var ex = Assert.Throws<InvalidOperationException>(() => {
-                var scope1 = ConsoleOut.BeginIntercept(new StringWriter());
-                var scope2 = ConsoleOut.BeginIntercept(new StringWriter());
-                scope1.Dispose();
-            });
-        }
-
-        [Fact]
-        public async Task BeginInterceptInTwoThreads_Should_MaintainSeparatedScopes()
-        {
-            const int count = 5;
-
-            Task[] tasks = new Task[count];
-            StringWriter[] writers = new StringWriter[5];
-            for(var i = 0; i < count; i++)
-            {
-                writers[i] = new StringWriter();
-                await Task.Run(async () => {
-                    using (ConsoleOut.BeginIntercept(writers[i]))
-                    {
-                        await Task.Delay((new Random()).Next(50, 100));
-                        Console.Write(i);
-                        await Task.Delay((new Random()).Next(50, 100));
-                    }
-                });
             }
 
-            for(int i = 0; i < writers.Length; i++)
-            {
-                Assert.Equal($"{i}", writers[i].ToString());
-            }
+            const int ITERATIONS = 5;
+
+            var tasks = Enumerable.Range(1, ITERATIONS)
+                .Select((i) => LogMessageIndicatesThreadSafe(i.ToString(), i * 100))
+                .ToArray();
+            var results = await Task.WhenAll(tasks);
+            var threadSafe = results.All((result) => result == true);
+
+            Assert.False(threadSafe, "NOTE: this library is not threadsafe");
         }
     }
 }
